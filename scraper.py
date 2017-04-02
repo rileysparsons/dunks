@@ -1,3 +1,4 @@
+
 import pandas as pd
 import numpy as np
 import urllib2
@@ -110,156 +111,140 @@ def scrape_all(year):
                 # print "fuzzywuzzy found: " + str(players.index[index[0][0]])
                 return players.index[index[0][0]]
 
-        def parse_pbp(page, dunk_dict, players, game_id):
-            g_soup = bs4.BeautifulSoup(page, "lxml")
-            title = g_soup.title
-            play_by_play =  g_soup.find("article", {"class":"play-by-play"})
+        def parse_dunk(dunk, players, game_id, title, teams):
+            if "missed" or "made" in dunk:
 
-            teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
+                # Old style
+                if "missed" in dunk:
+                    dunker_name = dunk.split("miss")[0]
+                    make = 0
+                    # And he missed it...
+                elif "made" in dunk:
+                    dunker_name = dunk.split("made")[0]
+                    make = 0
+                elif "alley-oop" in dunk:
+                    dunker_name = dunk.split("alley-oop")[0]
+                    make = 1
+                elif "'s" in dunk:
+                    # rare possesive form of play-by-play, "player 1 blocks player 2's slam dunk"
+                    # Since the dunk was blocked, we'll just ignore it for now.
+                    return
+                else:
+                    print "can't find name"
+                    return
+            else:
+                if "miss" in dunk:
+                    # And he missed it...
+                    dunker_name = dunk.split("miss")[0]
+                    make = 0
 
-            print title.text.split(" - ")
+                elif "make" in dunk:
+                    # And he made it...
+                    dunker_name = dunk.split("make")[0]
+                    make = 1
+                elif "alley-oop" in dunk:
+                    dunker_name = dunk.split("alley-oop")[0]
+                    make = 1
+                elif "'s" in dunk:
+                    # rare possesive form of play-by-play, "player 1 blocks player 2's slam dunk"
+                    # Since the dunk was blocked, we'll just ignore it for now.
+                    return
+                else:
+                    print "can't find name"
+                    return
+
+            # Try getting a last name for player, some people don't have these
+            if len(dunker_name.split(" ", 1)) == 2:
+                last_name = dunker_name.split(" ", 1)[1].strip()
+            else:
+                last_name = ""
+
+            # Fetch the playerId from the passed in player dataframe.
+            first_name = dunker_name.split(" ", 1)[0].strip()
+
+            if len(first_name+last_name) != 0:
+                player_id = getPlayerId(last_name, first_name, players)
+            else:
+                player_id = np.NaN
+
+            # Add quarter to record
+            quarter = q_id[-1]
+
+            # Add data to dunk record
             try:
-                for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
-                    q_id =""
-                    for div in acc.find_all("div"):
-                        if div.has_attr('id'):
-                            q_id = div["id"]
-                    for tr in acc.find_all("tr"):
-                        details = tr.find("td", {"class":"game-details"})
-                        if details != None:
+                date_from_title = title.text.split(" - ")[2].strip().encode("ascii", "ignore")
+                date = datetime.datetime.strptime(date_from_title, "%B %d, %Y")
 
-                            play = details.string.lower()
-                            # This play was a dunk!
-                            if "dunk" in play:
+                day = date.day
+                month = date.month
+                year = date.year
 
-                                if "missed" or "made" in play:
+            except IndexError:
+                print "Could not get date for game"
 
-                                    # Old style
-                                    if "missed" in play:
-                                        dunker_name = play.split("miss")[0]
-                                        dunk_dict["make"].append(0)
-                                        # And he missed it...
-                                    elif "made" in play:
-                                        dunker_name = play.split("made")[0]
-                                        dunk_dict["make"].append(1)
-                                    elif "alley-oop" in play:
-                                        dunker_name = play.split("alley-oop")[0]
-                                        dunk_dict["make"].append(1)
-                                    elif "'s" in play:
-                                        # rare possesive form of play-by-play, "player 1 blocks player 2's slam dunk"
-                                        # Since the dunk was blocked, we'll just ignore it for now.
-                                        continue
-                                    else:
-                                        print "can't find name"
-                                        dunker_name = ""
-                                        dunk_dict["make"].append(np.NaN)
-                                else:
-                                    if "miss" in play:
-                                        # And he missed it...
-                                        dunker_name = play.split("miss")[0]
-                                        dunk_dict["make"].append(0)
+                day = np.NaN
+                month = np.NaN
+                year = np.NaN
 
-                                    elif "make" in play:
-                                        # And he made it...
-                                        dunker_name = play.split("make")[0]
-                                        dunk_dict["make"].append(1)
-                                    elif "alley-oop" in play:
-                                        dunker_name = play.split("alley-oop")[0]
-                                        dunk_dict["make"].append(1)
-                                    elif "'s" in play:
-                                        # rare possesive form of play-by-play, "player 1 blocks player 2's slam dunk"
-                                        # Since the dunk was blocked, we'll just ignore it for now.
-                                        continue
-                                    else:
-                                        print "can't find name"
-                                        dunker_name = ""
-                                        dunk_dict["make"].append(np.NaN)
+            # Add in-game time to dunk record
+            time_stamp = tr.find("td", {"class":"time-stamp"}).text
+            time = datetime.datetime.strptime(time_stamp, "%M:%S").time()
 
-                                # Try getting a last name for player, some people don't have these
-                                if len(dunker_name.split(" ", 1)) == 2:
-                                    last_name = dunker_name.split(" ", 1)[1].strip()
-                                else:
-                                    last_name = ""
+            minute = time.minute
+            second = time.second
 
-                                # Fetch the playerId from the passed in player dataframe.
-                                first_name = dunker_name.split(" ", 1)[0].strip()
+            ptrn = re.compile("\([\w\s]*\)")
+            # Add assist to dunk record
+            if re.findall(ptrn, dunk):
+                assist = re.findall(ptrn, dunk)[0]
+                full_name = assist.strip("(").strip(")").split("assists")[0].strip()
+                first_name = full_name.split(" ")[0].strip()
+                if len(full_name.split(" ")) == 2:
+                    last_name = full_name.split(" ")[1].strip()
+                else:
+                    last_name = ""
 
-                                if len(first_name+last_name) != 0:
-                                    player_id = getPlayerId(last_name, first_name, players)
-                                    dunk_dict["player_id"].append(player_id)
-                                else:
-                                    dunk_dict["player_id"].append(np.NaN)
+                if len(first_name+last_name) != 0:
+                    a_player_id = getPlayerId(last_name, first_name, players)
+                else:
+                    a_player_id = np.NaN
+            elif "assisted" in dunk:
+                full_name = dunk.lower().split("assisted by")[1].strip()
+                first_name = full_name.split(" ")[0].strip()
+                if len(full_name.split(" ")) == 2:
+                    last_name = full_name.split(" ")[1].strip()
+                else:
+                    last_name = ""
 
-                                # Add quarter to record
-                                dunk_dict["quarter"].append(q_id[-1])
+                if len(first_name+last_name) != 0:
+                    a_player_id = getPlayerId(last_name, first_name, players)
+                else:
+                    a_player_id = np.NaN
+            else:
+                a_player_id = np.NaN
 
 
-                                # Add data to dunk record
-                                try:
-                                    date_from_title = title.text.split(" - ")[2].strip().encode("ascii", "ignore")
-                                    dunk_dict["date"].append(datetime.datetime.strptime(date_from_title, "%B %d, %Y"))
-                                except IndexError:
-                                    print "Could not get date for game"
-                                    dunk_dict["date"].append(np.NaN)
+            try:
+                team_id = tr.find("img")["src"].split("/500/")[1].split(".png")[0].upper()
+            except IndexError:
+                print "couldn't find logo for team"
+                team_id = predict_team(player_id, a_player_id, players, teams)
+                
+            dunk_id = str(str(game_id)+str(quarter)+str(minute)+str(second))
 
-
-                                # Add in-game time to dunk record
-                                time_stamp = tr.find("td", {"class":"time-stamp"}).text
-                                dunk_dict["time"].append(datetime.datetime.strptime(time_stamp, "%M:%S").time())
-                                dunk_dict["game_id"].append(game_id)
-
-                                ptrn = re.compile("\([\w\s]*\)")
-
-                                # Add assist to dunk record
-                                if re.findall(ptrn, play):
-                                    assist = re.findall(ptrn, play)[0]
-                                    full_name = assist.strip("(").strip(")").split("assists")[0].strip()
-                                    first_name = full_name.split(" ")[0].strip()
-                                    if len(full_name.split(" ")) == 2:
-                                        last_name = full_name.split(" ")[1].strip()
-                                    else:
-                                        last_name = ""
-
-                                    if len(first_name+last_name) != 0:
-                                        a_player_id = getPlayerId(last_name, first_name, players)
-                                        dunk_dict["assister_id"].append(a_player_id)
-                                    else:
-                                        a_player_id = ""
-                                        dunk_dict["assister_id"].append(np.NaN)
-                                elif "assisted" in play:
-                                    full_name = play.lower().split("assisted by")[1].strip()
-                                    first_name = full_name.split(" ")[0].strip()
-                                    if len(full_name.split(" ")) == 2:
-                                        last_name = full_name.split(" ")[1].strip()
-                                    else:
-                                        last_name = ""
-
-                                    if len(first_name+last_name) != 0:
-                                        a_player_id = getPlayerId(last_name, first_name, players)
-                                        dunk_dict["assister_id"].append(a_player_id)
-                                    else:
-                                        a_player_id = ""
-                                        dunk_dict["assister_id"].append(np.NaN)
-                                else:
-                                    a_player_id = ""
-                                    dunk_dict["assister_id"].append(np.NaN)
-
-
-                                try:
-                                    team_id = tr.find("img")["src"].split("/500/")[1].split(".png")[0].upper()
-                                    dunk_dict["team"].append(team_id)
-                                except IndexError:
-                                    print "couldn't find logo for team"
-                                    dunk_dict["team"].append(predict_team(player_id, a_player_id, players, teams))
-
-            except AttributeError, e:
-                print e.message
-                raise
-            except Exception as e:
-                print "unexpected error: " + e.message
-                raise
-
-            return dunk_dict
+            return dict(day=day,
+            month=month,
+            year=year,
+            minute=minute,
+            second=second,
+            game_id=game_id,
+            quarter=quarter,
+            make=make,
+            player_id=player_id,
+            assister_id=a_player_id,
+            team=team_id,
+            id=dunk_id
+            )
 
         def season_duration(year):
 
@@ -281,32 +266,25 @@ def scrape_all(year):
             return start_date, end_date
 
         def predict_team(dunker, assister, player_list, teams):
-            if assister != "":
-                dunker_teams = player_list.ix[dunker, "teams"]
-                if type(dunker_teams) == list:
-                    dunker_teams = ",".join(dunker_teams)
+            
+            dunker_teams = player_list.ix[dunker, "teams"]
+            if type(dunker_teams) == list:
+                dunker_teams = ",".join(dunker_teams)
+            
+            if not pd.isnull(assister):
+                
                 assister_teams = player_list.ix[assister, "teams"]
                 if type(assister_teams) == list:
                     assister_teams = ",".join(assister_teams)
-                print teams, dunker_teams, assister_teams
-
+                
                 for t in teams:
-                    # print t + " looking for team"
                     if t in dunker_teams and t in assister_teams:
-                        # print "found team: " + t
                         return t
-                print "team not found"
             else:
-                dunker_teams = player_list.ix[dunker, "teams"]
-                if type(dunker_teams) == list:
-                    dunker_teams = ",".join(dunker_teams)
-                print teams, dunker_teams
                 for t in teams:
-                    print t + " looking for team"
                     if t in dunker_teams:
-                        print "found team: " + t
                         return t
-                print "team not found"
+                    
             return np.NaN
 
 
@@ -357,13 +335,20 @@ def scrape_all(year):
 
         ###### END OF HELPER METHODS ######
 
-        GAME_ROOT_URL = "http://www.espn.com/nba/playbyplay?gameId={0}"
+        db = dataset.connect("sqlite:///dunks.db")
+        table = db["dunks"]
+
+        results = list(table.find(season=2005, order_by=["-year", "-month", "-day"]))
+        
         start_date, end_date = season_duration(year)
-
-        dunk_dict = collections.defaultdict(list)
-
-        # db = dataset.connect()
-        # table = db["dunks"]
+        
+        if len(results) > 0:
+            month = results[0]["month"]
+            day = results[0]["day"]
+            year = results[0]["year"]
+            start_date = datetime.datetime(year=year, month=month, day=day)
+        
+        GAME_ROOT_URL = "http://www.espn.com/nba/playbyplay?gameId={0}"    
 
         # ESPN starts using sequential game_ids starting Oct 2012, making it very easy to iterate through all games.
         if start_date > datetime.datetime.strptime("October, 2012", "%B, %Y"):
@@ -408,18 +393,45 @@ def scrape_all(year):
                     time.sleep(np.random.randint(2,7))
                     try:
                         g = urllib2.urlopen(GAME_ROOT_URL.format(game_id)).read()
-                        g_soup = bs4.BeautifulSoup(g, "lxml")
-                        with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
-                            f.write(str(g_soup))
                     except urllib2.URLError:
                         print "could not get page"
                         games_not_found.append(game_id)
                         continue
+                        
+                        
+                g_soup = bs4.BeautifulSoup(g, "lxml")
+                with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
+                    f.write(str(g_soup)) 
 
-                try:
-                    dunk_dict = parse_pbp(g, dunk_dict, players, game_id)
-                except AttributeError:
-                    games_not_found.append(game_id)
+                title = g_soup.title
+                print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
+                
+                
+                play_by_play =  g_soup.find("article", {"class":"play-by-play"})
+
+                teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
+
+                for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
+                    for div in acc.find_all("div"):
+                        if div.has_attr('id'):
+                            q_id = div["id"]
+                    for tr in acc.find_all("tr"):
+                        details = tr.find("td", {"class":"game-details"})
+                        if details != None:
+                            play = details.string.lower()
+                            if "dunk" in play:
+                                # This play was a dunk!
+                                parsed_dict = parse_dunk(play, players, game_id, title, teams)
+                                if parsed_dict != None:
+                                    parsed_dict["season"] = year
+                                    try:
+                                        table.insert_ignore(parsed_dict, ["id"])
+                                        db.commit()
+                                    except:
+                                        db.rollback()
+                                else:
+                                    continue
+
         # ESPN doesn't use a sequential numbering scheme for game_ids before October 2012
         else:
             print "before 2012"
@@ -449,38 +461,56 @@ def scrape_all(year):
                         print "We've got this on disk"
                     except IOError:
                         print "Don't have this play-by-play yet"
-                        time.sleep(np.random.randint(2,7))
                         try:
+                            time.sleep(np.random.randint(2,7))
                             g = urllib2.urlopen(GAME_ROOT_URL.format(game_id)).read()
-                            g_soup = bs4.BeautifulSoup(g, "lxml")
-                            with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
-                                f.write(str(g_soup))
                         except urllib2.URLError:
                             print "could not get page"
                             games_not_found.append(game_id)
                             continue
+                        
+                    g_soup = bs4.BeautifulSoup(g, "lxml")
+                    with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
+                        f.write(str(g_soup)) 
 
-                    try:
-                        print "trying to parse pbp"
-                        dunk_dict = parse_pbp(g, dunk_dict, players, game_id)
-                    except AttributeError, error:
-                        print "game not found "+ game_id + "error: " + error.message
-                        games_not_found.append(game_id)
-                    except Exception, error:
-                        print "unexpected error: " + error.message
+                    title = g_soup.title
+                    print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
+                    
+                    play_by_play =  g_soup.find("article", {"class":"play-by-play"})
+                    
+                    teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
+
+                    for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
+                        for div in acc.find_all("div"):
+                            if div.has_attr('id'):
+                                q_id = div["id"]
+                        for tr in acc.find_all("tr"):
+                            details = tr.find("td", {"class":"game-details"})
+                            if details != None:
+                                play = details.string.lower()
+                                if "dunk" in play:
+                                    # This play was a dunk!
+                                    parsed_dict = parse_dunk(play, players, game_id, title, teams)
+                                    if parsed_dict != None:
+                                        parsed_dict["season"] = year
+                                        try:
+                                            table.insert_ignore(parsed_dict, ["id"])
+                                            db.commit()
+                                        except:
+                                            db.rollback()
+                                else:
+                                    continue
+        #
+        # for k,v in dunk_dict.iteritems():
+        #     print k, len(v)
+        #
+        #
+        # df = pd.DataFrame(dunk_dict)
+        # print df
 
 
-        for k,v in dunk_dict.iteritems():
-            print k, len(v)
-
-
-        df = pd.DataFrame(dunk_dict)
-        print df
-
-        df["id"] = df.apply((lambda x: str(str(x["game_id"])+str(x["quarter"])+str(x["time"]).replace(":", ""))), axis=1)
-
-        with open(os.path.join(dataset_path, "dunks.csv"), "wb") as f:
-            df.to_csv(f)
+        # with open(os.path.join(dataset_path, "dunks.csv"), "wb") as f:
+        #     df.to_csv(f)
 
     player_list = players_for_year(year)
     scrape_pbp(year, player_list)
