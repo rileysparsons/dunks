@@ -112,8 +112,9 @@ def scrape_all(year):
                 return players.index[index[0][0]]
 
         def parse_dunk(dunk, players, game_id, title, teams):
-            if "missed" or "made" in dunk:
-
+            print dunk
+            if ("missed" in dunk) or ("made" in dunk):
+                print "old"
                 # Old style
                 if "missed" in dunk:
                     dunker_name = dunk.split("miss")[0]
@@ -133,6 +134,7 @@ def scrape_all(year):
                     print "can't find name"
                     return
             else:
+                print "new"
                 if "miss" in dunk:
                     # And he missed it...
                     dunker_name = dunk.split("miss")[0]
@@ -333,184 +335,181 @@ def scrape_all(year):
 
             return r
 
+        
+        def get_game_ids_for_season(season):
+            print "looking for season for year: " + str(year)
+            page_title = "{0}%E2%80%93{1}_NBA_season".format(str(year), str(year+1)[2:])
+
+            r = wptools.page(page_title).get_parse().infobox["duration"]
+
+            start_date = 0
+            end_date = 0
+
+            dates_string = r.encode('ascii','ignore')
+            p = re.compile("[A-Za-z]+\s[0-9]+,\s[0-9]{4}")
+            dates = p.findall(dates_string)
+            start_date = datetime.datetime.strptime(dates[0], "%B %d, %Y")
+            end_date = datetime.datetime.strptime(dates[1], "%B %d, %Y")
+            
+            # ESPN starts using sequential game_ids starting Oct 2012, making it very easy to iterate through all games.
+            if start_date > datetime.datetime.strptime("October, 2012", "%B, %Y"):
+                print "after 2012"
+                r = request_schedule_page(start_date)
+
+                soup = bs4.BeautifulSoup(r, "lxml")
+
+                indices = []
+                pbp_path = "data/"+str(year)+"/pbp_reg"
+
+                if not os.path.exists(pbp_path):
+                    os.makedirs(pbp_path)
+
+                dataset_path = "data/"+str(year)+"/datasets"
+                if not os.path.exists(dataset_path):
+                    os.makedirs(dataset_path)
+
+                first_game_id = ""
+                for tr in soup.find("div", {"id":"sched-container"}).find_all("tr"):
+                    if tr.find("a", {"name":"&lpos=nba:schedule:score"}) != None:
+                        first_game_id = tr.find("a", {"name":"&lpos=nba:schedule:score"})["href"].split("=")[1]
+                        break
+
+                if year == 2011:
+                    reg_season_games = (66*30)/2
+                elif year == 1998:
+                    reg_season_games = (50*29)/2
+                else:
+                    reg_season_games = (82*30)/2
+                return np.arange(int(first_game_id), int(first_game_id)+reg_season_games)
+            
+            else:
+                print "before 2012"
+                duration = end_date - start_date
+
+                weeks_in_season = duration.days//7
+
+                dataset_path = "data/"+str(year)+"/datasets"
+                if not os.path.exists(dataset_path):
+                    os.makedirs(dataset_path)
+
+                game_ids = []
+                for week in np.arange(0, weeks_in_season+1):
+                    time.sleep(np.random.randint(2,7))
+                    r = request_schedule_page(start_date+datetime.timedelta(days=week*7))
+                    def year_to_espn_season_code(year):
+                        base = (20, 2000)
+                        diff = year - base[1]
+                        code_for_year = base[0] + diff
+                        return code_for_year
+
+                    soup = bs4.BeautifulSoup(r)
+                    games = soup.find_all("a", {"name":"&lpos=nba:schedule:score"})
+                    for game in games:
+                        game_id = game["href"].split("=")[1]
+                        game_month = int(game_id[2:4])
+                        game_day = int(game_id[4:6])
+                        game_year_code = int(game_id[0:2])
+                        print game_id, game_month, game_day, game_year_code, year_to_espn_season_code(start_date.year)
+                        if game_year_code == year_to_espn_season_code(start_date.year):
+                            # Beginning of Season
+                            if game_month == start_date.month:
+                                if game_day > start_date.day or game_day == start_date.day:
+                                    game_ids.append(game_id)
+                            elif game_month > start_date.month:
+                                game_ids.append(game_id)
+                        else:
+                            # End of Season
+                            if game_month == end_date.month:
+                                if game_day < end_date.day or game_day == end_date.day:
+                                    game_ids.append(game_id)
+                            elif game_month < end_date.month:
+                                game_ids.append(game_id)
+                return game_ids
+        
         ###### END OF HELPER METHODS ######
 
         db = dataset.connect("sqlite:///dunks.db")
         table = db["dunks"]
-
-        results = list(table.find(season=2005, order_by=["-year", "-month", "-day"]))
         
-        start_date, end_date = season_duration(year)
+        GAME_ROOT_URL = "http://www.espn.com/nba/playbyplay?gameId={0}"            
         
-        if len(results) > 0:
-            month = results[0]["month"]
-            day = results[0]["day"]
-            year = results[0]["year"]
-            start_date = datetime.datetime(year=year, month=month, day=day)
+        game_ids_path = os.path.join("data", str(year), "game_ids")
         
-        GAME_ROOT_URL = "http://www.espn.com/nba/playbyplay?gameId={0}"    
+        import pickle
+        if not os.path.exists(game_ids_path):
+            print year
+            game_ids = get_game_ids_for_season(year)
 
-        # ESPN starts using sequential game_ids starting Oct 2012, making it very easy to iterate through all games.
-        if start_date > datetime.datetime.strptime("October, 2012", "%B, %Y"):
-            print "after 2012"
-            r = request_schedule_page(start_date)
-
-            soup = bs4.BeautifulSoup(r, "lxml")
-
-            indices = []
-            pbp_path = "data/"+str(year)+"/pbp_reg"
-
-            if not os.path.exists(pbp_path):
-                os.makedirs(pbp_path)
-
-            dataset_path = "data/"+str(year)+"/datasets"
-            if not os.path.exists(dataset_path):
-                os.makedirs(dataset_path)
-
-            first_game_id = ""
-            for tr in soup.find("div", {"id":"sched-container"}).find_all("tr"):
-                if tr.find("a", {"name":"&lpos=nba:schedule:score"}) != None:
-                    first_game_id = tr.find("a", {"name":"&lpos=nba:schedule:score"})["href"].split("=")[1]
-                    break
-
-            if year == 2011:
-                reg_season_games = (66*30)/2
-            elif year == 1998:
-                reg_season_games = (50*29)/2
-            else:
-                reg_season_games = (82*30)/2
-
-            games_not_found = []
-
-            for game_id in np.arange(int(first_game_id), int(first_game_id)+reg_season_games):
-                try:
-                    with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "r") as f:
-                        g = f.read()
-                        g_soup = bs4.BeautifulSoup(g, "lxml")
-                    print "We've got this on disk"
-                except IOError:
-                    print "Don't have this play-by-play yet"
-                    time.sleep(np.random.randint(2,7))
-                    try:
-                        g = urllib2.urlopen(GAME_ROOT_URL.format(game_id)).read()
-                    except urllib2.URLError:
-                        print "could not get page"
-                        games_not_found.append(game_id)
-                        continue
-                        
-                        
-                g_soup = bs4.BeautifulSoup(g, "lxml")
-                with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
-                    f.write(str(g_soup)) 
-
-                title = g_soup.title
-                print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
-                
-                
-                play_by_play =  g_soup.find("article", {"class":"play-by-play"})
-
-                teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
-
-                for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
-                    for div in acc.find_all("div"):
-                        if div.has_attr('id'):
-                            q_id = div["id"]
-                    for tr in acc.find_all("tr"):
-                        details = tr.find("td", {"class":"game-details"})
-                        if details != None:
-                            play = details.string.lower()
-                            if "dunk" in play:
-                                # This play was a dunk!
-                                parsed_dict = parse_dunk(play, players, game_id, title, teams)
-                                if parsed_dict != None:
-                                    parsed_dict["season"] = year
-                                    try:
-                                        table.insert_ignore(parsed_dict, ["id"])
-                                        db.commit()
-                                    except:
-                                        db.rollback()
-                                else:
-                                    continue
-
-        # ESPN doesn't use a sequential numbering scheme for game_ids before October 2012
+            with open(game_ids_path, 'wb') as fp:
+                pickle.dump(game_ids, fp)
         else:
-            print "before 2012"
-            duration = end_date - start_date
+            with open (game_ids_path, 'rb') as fp:
+                game_ids = pickle.load(fp)
 
-            weeks_in_season = duration.days//7
+        # Check if we have any dunks from games this season already in the database
+        results = list(table.find(season=year, order_by=["-year", "-month", "-day"]))
+        if len(results) > 0:
+            last_game_id = results[0]["game_id"]
+            print last_game_id
+            print "index", game_ids.index(last_game_id)
+            game_ids = game_ids[game_ids.index(last_game_id):-1]
+            
+        games_not_found = []
+        
+        pbp_path = os.path.join("data", str(year), "pbp_reg")
 
-            pbp_path = "data/"+str(year)+"/pbp_reg"
-
-            if not os.path.exists(pbp_path):
-                os.makedirs(pbp_path)
-
-            dataset_path = "data/"+str(year)+"/datasets"
-            if not os.path.exists(dataset_path):
-                os.makedirs(dataset_path)
-
-            games_not_found = []
-
-            for week in np.arange(0, weeks_in_season+1):
-                r = request_schedule_page(start_date+datetime.timedelta(days=week*7))
-                game_ids = parse_schedule_page(r, start_date, end_date)
-                for game_id in game_ids:
-                    try:
-                        with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "r") as f:
-                            g = f.read()
-                            g_soup = bs4.BeautifulSoup(g, "lxml")
-                        print "We've got this on disk"
-                    except IOError:
-                        print "Don't have this play-by-play yet"
-                        try:
-                            time.sleep(np.random.randint(2,7))
-                            g = urllib2.urlopen(GAME_ROOT_URL.format(game_id)).read()
-                        except urllib2.URLError:
-                            print "could not get page"
-                            games_not_found.append(game_id)
-                            continue
-                        
+        if not os.path.exists(pbp_path):
+            os.makedirs(pbp_path)
+            
+        for game_id in game_ids:  
+            try:
+                with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "r") as f:
+                    g = f.read()
                     g_soup = bs4.BeautifulSoup(g, "lxml")
-                    with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
-                        f.write(str(g_soup)) 
-
-                    title = g_soup.title
-                    print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
-                    
-                    play_by_play =  g_soup.find("article", {"class":"play-by-play"})
-                    
-                    teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
-
-                    for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
-                        for div in acc.find_all("div"):
-                            if div.has_attr('id'):
-                                q_id = div["id"]
-                        for tr in acc.find_all("tr"):
-                            details = tr.find("td", {"class":"game-details"})
-                            if details != None:
-                                play = details.string.lower()
-                                if "dunk" in play:
-                                    # This play was a dunk!
-                                    parsed_dict = parse_dunk(play, players, game_id, title, teams)
-                                    if parsed_dict != None:
-                                        parsed_dict["season"] = year
-                                        try:
-                                            table.insert_ignore(parsed_dict, ["id"])
-                                            db.commit()
-                                        except:
-                                            db.rollback()
-                                else:
-                                    continue
-        #
-        # for k,v in dunk_dict.iteritems():
-        #     print k, len(v)
-        #
-        #
-        # df = pd.DataFrame(dunk_dict)
-        # print df
+                print "We've got this on disk"
+            except IOError:
+                print "Don't have this play-by-play yet"
+                time.sleep(np.random.randint(2,7))
+                try:
+                    g = urllib2.urlopen(GAME_ROOT_URL.format(game_id)).read()
+                except urllib2.URLError:
+                    print "could not get page"
+                    games_not_found.append(game_id)
+                    continue
 
 
-        # with open(os.path.join(dataset_path, "dunks.csv"), "wb") as f:
-        #     df.to_csv(f)
+            g_soup = bs4.BeautifulSoup(g, "lxml")
+            with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
+                f.write(str(g_soup)) 
+
+            title = g_soup.title
+            print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
+
+
+            play_by_play =  g_soup.find("article", {"class":"play-by-play"})
+
+            teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
+
+            for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
+                for div in acc.find_all("div"):
+                    if div.has_attr('id'):
+                        q_id = div["id"]
+                for tr in acc.find_all("tr"):
+                    details = tr.find("td", {"class":"game-details"})
+                    if details != None:
+                        play = details.string.lower()
+                        if "dunk" in play:
+                            # This play was a dunk!
+                            parsed_dict = parse_dunk(play, players, game_id, title, teams)
+                            if parsed_dict != None:
+                                parsed_dict["season"] = year
+                                try:
+                                    table.insert_ignore(parsed_dict, ["id"])
+                                    db.commit()
+                                except:
+                                    db.rollback()
+                            else:
+                                continue
 
     player_list = players_for_year(year)
     scrape_pbp(year, player_list)
