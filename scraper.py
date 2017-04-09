@@ -1,3 +1,4 @@
+from argparse import _ActionsContainer
 
 import pandas as pd
 import numpy as np
@@ -93,6 +94,7 @@ def scrape_all(year):
 
 
     def scrape_pbp(year, players):
+        # type: (object, object) -> object
         # scrapes ESPN and wikipedia
 
         ###### Helper Methods #######
@@ -209,7 +211,7 @@ def scrape_all(year):
                 if len(first_name+last_name) != 0:
                     a_player_id = getPlayerId(last_name, first_name, players)
                 else:
-                    a_player_id = np.NaN
+                    a_player_id = ""
             elif "assisted" in dunk:
                 full_name = dunk.lower().split("assisted by")[1].strip()
                 first_name = full_name.split(" ")[0].strip()
@@ -221,9 +223,9 @@ def scrape_all(year):
                 if len(first_name+last_name) != 0:
                     a_player_id = getPlayerId(last_name, first_name, players)
                 else:
-                    a_player_id = np.NaN
+                    a_player_id = ""
             else:
-                a_player_id = np.NaN
+                a_player_id = ""
 
 
             try:
@@ -273,7 +275,7 @@ def scrape_all(year):
             if type(dunker_teams) == list:
                 dunker_teams = ",".join(dunker_teams)
             
-            if not pd.isnull(assister):
+            if assister:
                 
                 assister_teams = player_list.ix[assister, "teams"]
                 if type(assister_teams) == list:
@@ -447,21 +449,25 @@ def scrape_all(year):
                 game_ids = pickle.load(fp)
 
         # Check if we have any dunks from games this season already in the database
-        results = list(table.find(season=year, order_by=["-year", "-month", "-day"]))
-        if len(results) > 0:
-            last_game_id = results[0]["game_id"]
-            print last_game_id
-            print "index", game_ids.index(last_game_id)
-            game_ids = game_ids[game_ids.index(last_game_id):-1]
-            
+        results = list(table.find(season=year))
+        print len(results)
+        recorded_g_ids = set([int(dunk["game_id"]) for dunk in results])
+        all_g_ids = set([int(game_id) for game_id in game_ids])
+        if len(recorded_g_ids) > 0:
+            missing_g_ids = list(all_g_ids - recorded_g_ids)
+        else:
+            missing_g_ids = all_g_ids
+        
+        print "There are ", len(missing_g_ids), " non-recorded games in the existing dunk data."
         games_not_found = []
         
         pbp_path = os.path.join("data", str(year), "pbp_reg")
 
         if not os.path.exists(pbp_path):
             os.makedirs(pbp_path)
-            
-        for game_id in game_ids:  
+    
+        for game_id in missing_g_ids:  
+            print game_id
             try:
                 with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "r") as f:
                     g = f.read()
@@ -480,44 +486,55 @@ def scrape_all(year):
 
             g_soup = bs4.BeautifulSoup(g, "lxml")
             with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "wb") as f:
-                f.write(str(g_soup)) 
-
-            title = g_soup.title
-            print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
+                f.write(str(g_soup))
+            try:
+                title = g_soup.title
+                print "Checking for dunks: ", " ".join(title.text.split(" - ")[0:3])
+            except AttributeError:
+                print "Something went wrong. Possibly the backed up file did not save properly."
 
 
             play_by_play =  g_soup.find("article", {"class":"play-by-play"})
 
+
             teams = [team.text for team in g_soup.find_all("span", {"class":"abbrev"})]
 
-            for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
-                for div in acc.find_all("div"):
-                    if div.has_attr('id'):
-                        q_id = div["id"]
-                for tr in acc.find_all("tr"):
-                    details = tr.find("td", {"class":"game-details"})
-                    if details != None:
-                        play = details.string.lower()
-                        if "dunk" in play:
-                            # This play was a dunk!
-                            parsed_dict = parse_dunk(play, players, game_id, title, teams)
-                            if parsed_dict != None:
-                                parsed_dict["season"] = year
-                                try:
-                                    table.insert_ignore(parsed_dict, ["id"])
-                                    db.commit()
-                                except:
-                                    db.rollback()
-                            else:
-                                continue
+            try:
+                for acc in play_by_play.find_all("li", {"class":"accordion-item"}):
+                    for div in acc.find_all("div"):
+                        if div.has_attr('id'):
+                            q_id = div["id"]
+                    for tr in acc.find_all("tr"):
+                        details = tr.find("td", {"class":"game-details"})
+                        if details != None:
+                            play = details.string.lower()
+                            if "dunk" in play:
+                                # This play was a dunk!
+                                parsed_dict = parse_dunk(play, players, game_id, title, teams)
+                                if parsed_dict != None:
+                                    parsed_dict["season"] = year
+                                    try:
+                                        table.insert_ignore(parsed_dict, ["id"])
+                                        db.commit()
+                                        print "dunk saved"
+                                    except Exception as err:
+                                        db.rollback()
+                                        print err.message, "dunk not saved"
+                                else:
+                                    continue
+            except AttributeError:
+                print "Play-by-play parsing failed. Probably got incorrect page."
+                continue
 
     player_list = players_for_year(year)
     scrape_pbp(year, player_list)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Get dunks for any given NBA season')
-    parser.add_argument('season', type=int,
-                        help='The year to scrape (the year passed represents the beginning of the season)')
+    parser.add_argument('-s', '--season', type=int, nargs='+',
+                        help='The year to scrape (the year passed represents the beginning of the season)', required=True)
 
     args = parser.parse_args()
-    scrape_all(args.season)
+    print args.season
+    for season in list(args.season):
+        scrape_all(season)

@@ -35,7 +35,7 @@ def aggregate_and_annotate(players, dunks):
         player_dunks_by_years.append(df)
     df = pd.concat(player_dunks_by_years)
     df.reset_index(inplace=True)
-    print pd.DataFrame(*zip(df.apply(find_player_stats_for_season, axis=1))).head()
+    print pd.DataFrame(df.apply(find_player_stats_for_season, axis=1)).head()
     # stats.head()
     # print pd.concat(df, stats).head()
 
