@@ -18,8 +18,8 @@ import matplotlib.pyplot as plt
 import argparse
 import dataset
 
-from database import Database
-from parser import ScheduleParser, PlayerParser
+from database import DatabaseManager
+from parser import ScheduleParser, PlayerParser, PlayByPlayParser
 
 
 
@@ -304,7 +304,7 @@ def scrape_all(year):
                 code_for_year = base[0] + diff
                 return code_for_year
 
-            soup = bs4.BeautifulSoup(page)
+            soup = bs4.BeautifulSoup(page, 'lxml')
             games = soup.find_all("a", {"name":"&lpos=nba:schedule:score"})
             links = []
             for game in games:
@@ -407,7 +407,7 @@ def scrape_all(year):
                         code_for_year = base[0] + diff
                         return code_for_year
 
-                    soup = bs4.BeautifulSoup(r)
+                    soup = bs4.BeautifulSoup(r, 'lxml')
                     games = soup.find_all("a", {"name":"&lpos=nba:schedule:score"})
                     for game in games:
                         game_id = game["href"].split("=")[1]
@@ -532,56 +532,40 @@ def scrape_all(year):
     player_list = players_for_year(year)
     scrape_pbp(year, player_list)
 
+
 class PlayerScraper:
 
     def __init__(self, season, force_retrieval=False):
         self.force_retrieval = force_retrieval
         self.parser = PlayerParser()
         self.season = season
+        self.database_manager = DatabaseManager()
+        self.numeric_cols = []
 
     def request_players_from_web(self):
         player_stat_page = "http://www.basketball-reference.com/leagues/NBA_{0}_totals.html".format(str(self.season+1))
         r = urllib2.urlopen(player_stat_page)
         return r
 
-    # def backup_players_to_disk(year, df):
-    #     if not os.path.exists("data/"+str(year)):
-    #         os.makedirs("data/"+str(year))
-    #
-    #     with open(os.path.join("data",str(year),"player_list.csv"), "w") as f:
-    #         df.to_csv(f)
-
     def fetch_players(self):
-        if self.force_retrieval:
+        if len(self.database_manager.get_players(self.season)) == 0 or self.force_retrieval:
             # We want to get the remote copy, regardless if we have it already.
+            print "fetching players remotely"
             page = self.request_players_from_web()
             df = self.parser.parse_player_page(page)
-            # backup_players_to_disk(year, df)
+            df.reset_index(inplace=True)
+            df["season"] = self.season
+            df = df.apply(pd.to_numeric, errors='ignore')
+            print df.loc[:,'efg_pct']
+            [self.database_manager.add_player(v) for k,v in df.to_dict(orient='index').iteritems()]
 
-        else:
-            try:
-                # Just try to get the local copy, if it exists
-                with open(os.path.join(str(self.season), "player_list.csv"), "r") as f:
-                    return pd.DataFrame.from_csv(f)
-            except IOError:
-                # We don't have a local copy
-                page = self.request_players_from_web()
-                df = self.parser.parse_player_page(page)
-                # backup_players_to_disk(year, df)
+        return self.database_manager.get_players(self.season)
 
-        return df
 
-class GameScraper:
-    """" A helper that pulls down play-by-play and schedule data from ESPN"""
+class WikiScraper:
 
-    def __init__(self, season, force_retrieval=False):
-        self.force_retrieval = force_retrieval
+    def __init__(self, season):
         self.season = season
-
-        self.parser = ScheduleParser(season)
-        self.player_scraper = PlayerScraper(season)
-
-        self.database = Database()
 
     def fetch_season_duration(self):
         print "looking for season for year: " + str(self.season)
@@ -594,54 +578,131 @@ class GameScraper:
         dates = p.findall(dates_string)
         start_date = datetime.datetime.strptime(dates[0], "%B %d, %Y")
         end_date = datetime.datetime.strptime(dates[1], "%B %d, %Y")
-        print start_date, end_date
         return start_date, end_date
 
+
+class ScheduleScraper:
+
+    def __init__(self, season):
+        self.season = season
+        self.parser = ScheduleParser(season)
+        self.database_manager = DatabaseManager()
+
     def fetch_all_games(self, start_date, end_date):
-        # dataset_path = "data/" + str(self.season) + "/datasets"
-        # if not os.path.exists(dataset_path):
-        #     os.makedirs(dataset_path)
-        root_url = "http://www.espn.com/nba/schedule/_/date/{date}"
-        if start_date > datetime.datetime.strptime("October, 2012", "%B, %Y"):
-            date_param = start_date.strftime("%Y%m%d")
-            r = urllib2.urlopen(root_url.format(date=date_param)).read()
-            game_ids = self.parser.parse_schedule_page(r, start_date, end_date)
-            if self.season == 2011:
-                reg_season_games = (66 * 30) / 2
-            elif self.season == 1998:
-                reg_season_games = (50 * 29) / 2
-            else:
-                reg_season_games = (82 * 30) / 2
-            return np.arange(int(game_ids[0]), int(game_ids[0]) + reg_season_games)
-        else:
+
+        if self.season == 2011:
+            expected_game_count = (66 * 30) / 2
+        elif self.season == 1998:
+            expected_game_count = (50 * 29) / 2
+        elif self.season < 2004:
+            expected_game_count = (82 * 29) / 2
+        elif self.season > 2003:
+            expected_game_count = (82 * 30) / 2
+
+        print len(self.database_manager.get_game_ids(self.season))
+        if len(self.database_manager.get_game_ids(self.season)) < expected_game_count:
+            root_url = "http://www.espn.com/nba/schedule/_/date/{date}"
+
             duration = end_date - start_date
             weeks_in_season = duration.days // 7
-            game_ids = []
             for week in np.arange(0, weeks_in_season + 1):
-                time.sleep(np.random.randint(2, 7))
+                time.sleep(np.random.randint(10, 15))
                 date = start_date + datetime.timedelta(days=week * 7)
-                date_param = date.strftime("%Y%m%d")
-                r = urllib2.urlopen(root_url.format(date=date_param)).read()
-                game_ids.extend(self.parser.parse_schedule_page(r, start_date, end_date))
-            return game_ids
+                iter = 1
+                while True and (iter < 10):
+                    try:
+                        opener = urllib2.build_opener()
+                        opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
+                        if iter > 2:
+                            date = date + datetime.timedelta(days=1)
+                            date_param = date.strftime("%Y%m%d")
+                            print 'attempting to request:', root_url.format(date=date_param)
+                            results = opener.open(root_url.format(date=date_param))
+                        else:
+                            date_param = date.strftime("%Y%m%d")
+                            print 'attempting to request:', root_url.format(date=date_param)
+                            results = opener.open(root_url.format(date=date_param))
+                        break
+                    except urllib2.HTTPError, detail:
+                        if detail.code == 500:
+                            print 'HTTP Error 500. Trying again in about', 5*iter, 'seconds.'
+                            time.sleep(np.random.randint(4*iter, 7*iter))
+                            iter += 1
+                            continue
+                        else:
+                            raise
 
-    def start_scrape(self):
-        start_date, end_date = self.fetch_season_duration()
-        all_game_ids = self.fetch_all_games(start_date, end_date)
-        players = self.player_scraper.fetch_players()
-        print players
+                page = results.read()
+                game_ids = self.parser.parse_schedule_page(page, start_date, end_date)
+                for game_id in game_ids:
+                    self.database_manager.add_game({"id": game_id, "season": self.season})
+
+        return self.database_manager.get_game_ids(self.season)
 
 
+class GameScraper:
+    """
+    
+    Pulls down play-by-play and schedule data from ESPN
+    
+    """
 
+    def __init__(self, game_ids, players, season=None, force_retrieval=False):
+        self.force_retrieval = force_retrieval
+        self.season = season
+        self.game_ids = game_ids
+        self.players = players
+        self.database_manager = DatabaseManager()
+        self.parser = PlayByPlayParser()
+        self.game_root_url = "http://www.espn.com/nba/playbyplay?gameId={0}"
 
+    def _save_pbp_to_disk(self, page, game_id):
+        import os
+        pbp_path = os.path.join('data', str(self.season))
+        with open(os.path.join(pbp_path, "pbp_" + str(game_id) + ".txt"), "wb") as f:
+            f.write(str(page))
+
+    def scrape_pbp(self):
+        print self.season
+        stored_game_ids = np.unique([dunk["game_id"] for dunk in self.database_manager.get_dunks(self.season)])
+        missing_game_ids = set(self.game_ids) - set(stored_game_ids)
+        print len(missing_game_ids), " missing game ids in dunk database, will attempt to retrieve."
+        pbp_path = os.path.join('data', str(self.season), 'pbp_reg')
+        for game_id in missing_game_ids:
+            try:
+                with open(os.path.join(pbp_path, "pbp_"+str(game_id)+".txt"), "r") as f:
+                    g = f.read()
+                print "We've got this on disk"
+            except IOError:
+                print "Don't have this play-by-play yet"
+                time.sleep(np.random.randint(2,7))
+                try:
+                    g = urllib2.urlopen(self.game_root_url.format(game_id)).read()
+                    self._save_pbp_to_disk(bs4.BeautifulSoup(g, "lxml"), game_id)
+                except urllib2.URLError:
+                    print "could not get page"
+                    continue
+            dunks = self.parser.parse_pbp(g, self.players, game_id, self.season)
+            if dunks is not None:
+                for dunk in dunks:
+                    if dunk is not None:
+                        self.database_manager.add_dunk(dunk)
+                    else:
+                        continue
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Get dunks for any given NBA season')
     parser.add_argument('-s', '--season', type=int, nargs='+',
-                        help='The year to scrape (the year passed represents the beginning of the season)', required=True)
+                        help='The year to scrape (the year passed represents the beginning of the season)',
+                        required=True)
 
+    parser.add_argument('-po', action='store_true')
     args = parser.parse_args()
-    print args.season
-    for season in list(args.season):
-        gamescraper = GameScraper(season=season)
-        gamescraper.start_scrape()
+    if args.season is not None:
+        for season in list(args.season):
+            start_date, end_date = WikiScraper(season).fetch_season_duration()
+            game_ids = ScheduleScraper(season).fetch_all_games(start_date, end_date)
+            players = PlayerScraper(season).fetch_players()
+            print season
+            game_scraper = GameScraper(game_ids, players, season)
+            game_scraper.scrape_pbp()
